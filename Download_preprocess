@@ -1,0 +1,242 @@
+# Script to perform normalization
+library(oligo)
+library(GEOquery)
+library(tidyverse)
+library(limma)
+library(hgu133plus2.db)
+
+# Get supplementary files
+# The use of supp files (.cel) is for future analysis of multiple data bases
+
+#getGEOSuppFiles("GSE67472", baseDir = "D:/th2_low")
+
+# Untar files
+#untar("D:/th2_low/GSE67472/GSE67472_RAW.tar", exdir = "Data/GSE67472/")
+
+# Listing .cel files
+
+cel_files <- list.celfiles("Data/GSE67472/", full.names = TRUE, listGzipped = TRUE)
+
+# Reading in cel files
+
+raw_data <- read.celfiles(cel_files)
+
+# Object with the names of each file
+
+file_name <- sampleNames(raw_data)
+
+
+# Metadata
+
+gse <- getGEO("GSE67472", destdir = "C:/R/TH2_LOW/Metadata", getGPL = FALSE)
+
+# Extract metadata (pData)
+
+metadata <- pData(phenoData(gse[[1]]))
+
+metadata_th <- metadata %>% 
+  dplyr::select(geo_accession, `th2 group:ch1`)
+
+# View the first few rows
+head(metadata)
+
+# Add the object to the phenotipic data
+
+pData(raw_data)$file_name <- file_name
+
+# Names that correspond to the metadata
+
+sample_names <- gsub("_.*", "", file_name)
+
+# Make sure names are the same as in phenotipic data
+
+sampleNames(raw_data) <- file_name
+
+# Add the names to de phenotipic data
+
+pData(raw_data)$geo_accession <- sample_names
+
+# Add if TH2 high or low to phenotipic data
+
+idx <- match(pData(raw_data)$geo_accession, metadata_th$geo_accession)
+
+pData(raw_data)$th2_group <- metadata_th$`th2 group:ch1`[idx]
+
+
+# Boxplot of raw data
+
+boxplot(raw_data)
+
+# Data normalization
+
+norm_data <- rma(raw_data)
+
+# Boxplot of normalized data
+
+boxplot(norm_data)
+
+
+# Expressión matrix
+
+expr_matrix <- exprs(norm_data)
+
+
+# We can observe that there is a batch effect since there are 2 extremely separated groups by
+# PC 1 with few sense since it mixes TH2 high, TH2 low and healthy subjects
+
+# Transpose expression matrix and make pca object
+
+pca <- prcomp(t(expr_matrix))
+
+# Convert to data frame of only PC 1 and PC 2
+
+df <- data.frame(
+  PC1 = pca$x[,1],
+  PC2 = pca$x[,2],
+  th2 = pData(norm_data)$th2_group
+)
+
+# Plot PCA
+
+ggplot(df, aes(PC1, PC2, color = th2)) +
+  geom_point(size = 3)
+
+
+library(FactoMineR)
+library(factoextra)
+library(corrplot)
+library(gridExtra)
+
+
+th2_group <- pData(norm_data)$th2_group
+
+# I change NAs to none so that PCA doesnt eliminate them
+
+th2_group[is.na(pData(norm_data)$th2_group)] <- "None"
+
+pca_f <- PCA(t(expr_matrix))
+var <- get_pca_var(pca)
+fviz_eig(pca_f, col.var = "blue")
+
+fviz_pca_ind(pca_f,
+             habillage = th2_group,
+             geom = "point",
+             addEllipses = TRUE,
+)
+
+# Top 20 contribuidores de PC 1 y 2
+
+a <- fviz_contrib(pca_f, choice = "var", axes = 1, top = 30)
+
+
+b <- fviz_contrib(pca_f, choice = "var", axes = 2, top = 30)
+
+grid.arrange(a, b, ncol = 2)
+
+
+
+
+# To correct for batch error, since it divided into 2 groups we make a hierarchical clustering
+# for 2 groups hoping it replicates the PCA division
+
+hc <- hclust(dist(t(expr_matrix)))
+
+batch <- cutree(hc, k = 2)
+
+# Confirm that it separates it into the same groups as the PCA
+
+df <- data.frame(
+  PC1 = pca$x[,1],
+  PC2 = pca$x[,2],
+  cluster = as.factor(batch)
+)
+
+# Plot PCA
+
+ggplot(df, aes(PC1, PC2, color = batch)) +
+  geom_point(size = 3)
+
+
+# Batch effect correction
+
+expr_corrected <- removeBatchEffect(expr_matrix, batch = batch)
+
+pca2 <- prcomp(t(expr_corrected))
+
+df2 <- data.frame(
+  PC1 = pca2$x[,1],
+  PC2 = pca2$x[,2],
+  th2 = pData(norm_data)$th2_group
+)
+
+ggplot(df2, aes(PC1, PC2, color = th2)) +
+  geom_point(size = 3)
+
+
+
+
+# Get mapping to change probe IDs to gene names
+
+probe_gene <- AnnotationDbi::select(
+  hgu133plus2.db,
+  keys = rownames(expr_corrected),
+  columns = "SYMBOL",
+  keytype = "PROBEID"
+)
+
+# Eliminate NAs in symbol column  
+
+probe_gene <- probe_gene[!is.na(probe_gene$SYMBOL), ]
+
+# Same for duplicated data
+
+probe_gene <- probe_gene[!duplicated(probe_gene), ]
+
+# MakE data frame
+
+expr_df <- as.data.frame(expr_corrected)
+
+# Asign the row names as the probe IDs for later merge
+
+expr_df$PROBEID <- rownames(expr_df)
+
+# Join the object that has the counts and the object with the gene names 
+
+expr_annot <- left_join(expr_df, probe_gene, by = "PROBEID")
+
+# Group the symbol duplicates and assign the mean of the counts
+
+expr_gene <- expr_annot %>%
+  group_by(SYMBOL) %>%
+  summarise(across(where(is.numeric), mean))
+
+# Eliminate NAs in symbol
+
+expr_gene <- expr_gene[!is.na(expr_gene$SYMBOL), ]
+
+# Data frame
+
+expr_gene_mat <- as.data.frame(expr_gene)
+
+# Assign the symbol ids to rownames
+
+rownames(expr_gene_mat) <- expr_gene_mat$SYMBOL
+
+# Delete the symbol column
+
+expr_gene_mat$SYMBOL <- NULL
+
+# To eliminate controls, it selects all controls since in the original data
+# only the controls had NA in th2 phenotype
+
+keep <- !is.na(pData(norm_data)$th2_group)
+
+# Object with only asthma patients
+
+expr_asthma <- expr_gene_mat[, keep]
+
+pheno_asthma <- pData(norm_data)[keep, ]
+
+all(colnames(expr_gene_mat)[keep] == pheno_asthma$file_name)
+
+
