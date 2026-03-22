@@ -1,0 +1,160 @@
+library(limma)
+library(EnhancedVolcano)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
+# Object with patient IDs
+
+col_data <- rownames(th2_low)
+
+# Data frame where the rownames are patient IDs and there is another column corresponding
+# to the cluster that each patient belongs to
+
+col_data <- data.frame(th2_low$cluster, row.names = col_data)
+
+col_data$cluster <- col_data$th2_low.cluster
+
+col_data$th2_low.cluster <- NULL
+
+# Ensure cluster is a factor so the design matrix gets clear column names
+
+col_data$cluster <- as.factor(col_data$cluster)
+
+# Since removeBatchEffect can not be then used for diff expression, we create object
+# of the batch group (established previously by the hclust) that corresponds to only 
+# the TH2 low 
+
+batch <- batch[names(batch) %in% rownames(col_data)]
+
+# Add as a column to the col_data
+
+col_data$detected_batch <- as.factor(batch)
+
+# Using 'detected_batch', create the design taking into account the batch effect
+
+design <- model.matrix(~ 0 + cluster + detected_batch, data = col_data)
+
+# Create names for the different design variables
+
+colnames(design) <- make.names(colnames(design)) 
+
+# Use the RMA matrix (Probe IDs), not the batch-corrected one as previously established why
+
+clean_expr_probes <- expr_matrix[, colnames(expr_th2_low)]
+
+# Differential expression
+
+fit <- lmFit(clean_expr_probes, design)
+
+# Comparison: Cluster 2 vs Cluster 1
+
+contrast.matrix <- makeContrasts(cluster2 - cluster1, levels = design)
+fit <- contrasts.fit(fit, contrast.matrix)
+fit <- eBayes(fit)
+
+res <- topTable(fit, coef = 1, number = Inf)
+
+
+# Diagnostic Q-Q Plot
+
+qqt(fit$t[,1], df = fit$df.prior + fit$df.residual, 
+    main = "Final Batch-Adjusted Q-Q Plot")
+abline(0, 1, col = "red")
+
+# Annotation with probe IDs assigned to a column named the same as the column 
+# in the object probe_gene
+
+res$PROBEID <- rownames(res)
+
+# Map Probes to Symbols (using the existing probe_gene object)
+# probe_gene contains the Probe ID and its corresponding SYMBOL
+
+res_final <- res %>% # Object from diff expr analysis
+  left_join(probe_gene, by = "PROBEID") %>% # Join with probe_gene object
+  filter(!is.na(SYMBOL)) %>% # Eliminate those which have NA in symbol column
+  group_by(SYMBOL) %>% # Group by the remaining SYMBOL so as to then process duplicates
+  slice_max(order_by = abs(t), n = 1) %>% # Keep best probe per gene
+  ungroup() 
+
+# Significant Gene List taking significant p as < 0.05, and significant LFC as > 1
+
+res_sig <- res_final %>%
+  filter(adj.P.Val < 0.05 & abs(logFC) > 1)
+
+# We use the probe-level fit for the volcano to see all data points
+
+EnhancedVolcano(res_final,
+                lab = res_final$SYMBOL,
+                x = 'logFC',
+                y = 'adj.P.Val',
+                title = 'Cluster 2 vs Cluster 1',
+                pCutoff = 0.05,
+                FCcutoff = 1.0)
+
+
+# GSEA
+
+# Object with only the log fold change
+
+res_lfc <- res_final$logFC
+
+# Assign the SYMBOL to the res log fold change object
+
+names(res_lfc) <- res_final$SYMBOL
+
+# Since GSEA requires the ranked list we sort by log fold change
+
+gene_list <- sort(na.omit(res_lfc), decreasing = TRUE)
+
+# GSEA object
+
+gse <- gseGO(
+  geneList = gene_list,
+  ont = "All",
+  keyType = "SYMBOL",
+  pvalueCutoff = 0.05,
+  OrgDb = "org.Hs.eg.db",
+  minGSSize = 10,
+  maxGSSize = 100
+)
+
+# Plotting specific genes to see the Cluster 1 vs Cluster 2 difference
+
+# Establishing genes with highest positive LFC 
+
+target_genes <- res_sig$SYMBOL[res_sig$logFC > quantile(res_sig$logFC, 0.80)]
+
+# Establishing genes with highest negative LFC
+
+target_genes2 <- res_sig$SYMBOL[res_sig$logFC < quantile(res_sig$logFC, 0.20)]
+
+# Convert to a pivot_longer object to then pass on to ggplot and plot
+# boxplots of the expression of each gene with respect to cluster
+
+plot_data_tg <- expr_th2_low[rownames(expr_th2_low) %in% target_genes, ] %>% # Expression of batch corrected data
+  t() %>% # Transpose sothat gene names are in columns
+  as.data.frame() %>% # Convert from tibble to data frame
+  rownames_to_column("SampleID") %>% # Names the columns as the genes
+  pivot_longer(cols = -SampleID, names_to = "Gene", values_to = "Expression") %>% # Pivot longer object 
+  left_join(th2_low, by = c("SampleID" = "file_name")) # Joint with patient metadata so as to be able to divide by cluster
+
+ggplot(plot_data_tg, aes(x = factor(cluster), y = Expression, fill = factor(cluster))) + # Object created abov, x = cluster, and in y the expression of each gene
+  geom_boxplot() + # Boxplot
+  facet_wrap(~Gene, scales = "free_y") + # Facet wrapto visualize all the genes in one image
+  theme_minimal() +
+  labs(x = "Cluster", title = "Gene Expression: TH2-Low Subgroups") # Labels
+
+# Same process but in this case for genes in the lower quantile in log fold change
+
+plot_data_tg2 <- expr_th2_low[rownames(expr_th2_low) %in% target_genes2, ] %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("SampleID") %>%
+  pivot_longer(cols = -SampleID, names_to = "Gene", values_to = "Expression") %>%
+  left_join(th2_low, by = c("SampleID" = "file_name"))
+
+ggplot(plot_data_tg2, aes(x = factor(cluster), y = Expression, fill = factor(cluster))) +
+  geom_boxplot() +
+  facet_wrap(~Gene, scales = "free_y") +
+  theme_minimal() +
+  labs(x = "Cluster", title = "Gene Expression: TH2-Low Subgroups")
