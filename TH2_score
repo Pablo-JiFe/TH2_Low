@@ -1,0 +1,88 @@
+library(tidyverse)
+library(FactoMineR)
+library(factoextra)
+
+# Genes associated with high TH2 (since its bulk data 3/4 of this genes are
+# described as being expresed by tisuse secondary to IL13 signaling
+# and thus markers of TH2 inflammation, the other 1/4 is IL13)
+
+genes <- c("POSTN", "CLCA1", "IL13", "SERPINB2")
+
+# Object of the genes that we want and that are in the expression object
+
+genes_present <- genes[genes %in% rownames(expr_asthma)]
+
+# Object wth the expression of only the desiered genes
+
+th2_expr <- expr_asthma[genes_present, ]
+
+# Scale the expressions so that they are comparable
+
+th2_z <- scale(t(th2_expr))
+
+# Mean of expression of the desired genes for each patient as to establish a TH2 score
+
+th2_score <- rowMeans(th2_z, na.rm = TRUE)
+
+# Data frame
+
+th2_score <- data.frame(th2_score)
+
+# Add a column to the score with the patients ID to latter join with the metadata
+
+th2_score$file_name <- rownames(th2_score)
+
+# Join the metadata and the th2 score by patient ID
+
+pheno_asthma <- left_join(th2_score, pheno_asthma, by = "file_name")
+
+# Boxplot that compares original data division and the th2 score established here
+
+ggplot(pheno_asthma) +
+  geom_boxplot(aes(x = th2_group, y = th2_score, fill = th2_group)) +
+  labs(title = "TH2 validation",
+       x = "TH2  Group from original publication",
+       y = "TH2 score",
+       fill = "TH2 Group")
+
+
+# Boolean column in metadata where true includes those whose TH2 score forms part of the 
+# q 30 and lower, the rest are taken as "TH2 high"
+
+pheno_asthma$low_quantile <- pheno_asthma$th2_score < quantile(pheno_asthma$th2_score, 0.30)
+
+# Boxplot comparing th2 score based on quantile separation
+
+ggplot(pheno_asthma) +
+  geom_boxplot(aes(x = low_quantile, y = th2_score, fill = low_quantile)) +
+  labs(title = "TH2 based on quantile",
+       x = "TH2  low",
+       y = "TH2 score",
+       fill = "TH2 low")
+
+# Keep the metadata of those establishes as TH2 by our quantile threshold
+
+th2_low <- pheno_asthma[pheno_asthma$low_quantile == TRUE,]
+
+rownames(th2_low) <- th2_low$file_name
+
+# Observe how many TH2 high from the original publication are part of our TH2 low
+
+table(th2_low$th2_group)
+
+# Object of expressions that includes only the samples of those established by us as TH2 low
+
+expr_th2_low <- expr_asthma[,colnames(expr_asthma) %in% rownames(th2_low)]
+
+# PCA of only the TH2 low samples
+
+pca_th2_low <- PCA(t(expr_th2_low))
+
+# PCA plot
+
+fviz_pca_ind(pca_th2_low,
+             habillage = th2_low$th2_group,
+             geom = "point",
+             addEllipses = TRUE,
+)
+
