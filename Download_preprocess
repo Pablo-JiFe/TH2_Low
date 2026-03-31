@@ -110,12 +110,14 @@ library(gridExtra)
 
 th2_group <- pData(norm_data)$th2_group
 
-# I change NAs to none so that PCA doesnt eliminate them
+# I change NAs to none so that PCA doesnt eliminate them since they are the controls
 
 th2_group[is.na(pData(norm_data)$th2_group)] <- "None"
 
 pca_f <- PCA(t(expr_matrix))
 var <- get_pca_var(pca)
+eigen <- get_eigenvalue(pca)
+
 fviz_eig(pca_f, col.var = "blue")
 
 fviz_pca_ind(pca_f,
@@ -135,42 +137,51 @@ grid.arrange(a, b, ncol = 2)
 
 
 
+library(sva)
 
-# To correct for batch error, since it divided into 2 groups we make a hierarchical clustering
-# for 2 groups hoping it replicates the PCA division
+pheno_all <- pData(norm_data)
+expr_all <- expr_matrix
 
-hc <- hclust(dist(t(expr_matrix)))
+# Protect the phenotype (Controls vs TH2-High vs TH2-Low)
+# We use 'th2_group' where NAs (controls) are labeled as "Control"
+pheno_all$th2_group[is.na(pheno_all$th2_group)] <- "Control"
 
-batch <- cutree(hc, k = 2)
+mod  <- model.matrix(~ as.factor(th2_group), data = pheno_all)
+mod0 <- model.matrix(~ 1, data = pheno_all)
 
-# Confirm that it separates it into the same groups as the PCA
+# Find SVs across the whole dataset
+n.sv <- num.sv(expr_all, mod, method = "be")
 
-df <- data.frame(
-  PC1 = pca$x[,1],
-  PC2 = pca$x[,2],
-  cluster = as.factor(batch)
-)
+expr_all <- as.matrix(expr_all)
 
-# Plot PCA
+svobj <- sva(expr_all, mod, mod0, n.sv = n.sv)
 
-ggplot(df, aes(PC1, PC2, color = batch)) +
-  geom_point(size = 3)
+# Clean the ENTIRE matrix
+expr_corrected <- removeBatchEffect(expr_all, covariates = svobj$sv)
 
+pca_clean <- prcomp(t(expr_corrected), scale. = TRUE)
+summary(pca_clean)
 
-# Batch effect correction
-
-expr_corrected <- removeBatchEffect(expr_matrix, batch = batch)
+# PCA CORRECTED
 
 pca2 <- prcomp(t(expr_corrected))
+eigen2 <- get_eigenvalue(pca2)
 
-df2 <- data.frame(
-  PC1 = pca2$x[,1],
-  PC2 = pca2$x[,2],
-  th2 = pData(norm_data)$th2_group
-)
+pca_plot <- function(i, u) {
+  df2 <- data.frame(
+    PCi = pca2$x[, i],
+    PCu = pca2$x[, u],
+    th2 = pData(norm_data)$th2_group
+  )
+  
+  p <- ggplot(df2, aes(PCi, PCu, color = th2)) +
+    geom_point(size = 3)  +
+    labs(x = paste0("PC", i, " (", round(eigen2[i, 2], 2), "%)"),
+         y = paste0("PC", u, " (", round(eigen2[u, 2], 2), "%)"))
+  print(p)
+}
 
-ggplot(df2, aes(PC1, PC2, color = th2)) +
-  geom_point(size = 3)
+pca_plot(i = 1, u = 2)
 
 
 
@@ -192,7 +203,7 @@ probe_gene <- probe_gene[!is.na(probe_gene$SYMBOL), ]
 
 probe_gene <- probe_gene[!duplicated(probe_gene), ]
 
-# MakE data frame
+# Make data frame
 
 expr_df <- as.data.frame(expr_corrected)
 
@@ -231,7 +242,7 @@ expr_gene_mat$SYMBOL <- NULL
 
 keep <- !is.na(pData(norm_data)$th2_group)
 
-# Object with only asthma patients
+# Object with only asthma patients and corrected by batch effect
 
 expr_asthma <- expr_gene_mat[, keep]
 
@@ -240,3 +251,7 @@ pheno_asthma <- pData(norm_data)[keep, ]
 all(colnames(expr_gene_mat)[keep] == pheno_asthma$file_name)
 
 
+
+#> Dictionary
+#> expr_matrix: Matrix with expression values corresponding to raw reads
+#> 
