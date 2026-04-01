@@ -1,0 +1,250 @@
+# Script to perform normalization
+library(oligo)
+library(GEOquery)
+library(tidyverse)
+library(limma)
+library(hgu133plus2.db)
+
+
+# 1.- Load data and metadata ----------------------------------------------
+
+# 1.1 Get supplementary files
+# The use of supp files (.cel) is for future analysis of multiple data bases
+
+#getGEOSuppFiles("GSE67472", baseDir = "D:/th2_low")
+
+# 1.1.2 Untar files
+#untar("D:/th2_low/GSE67472/GSE67472_RAW.tar", exdir = "Data/GSE67472/")
+
+# 1.1.3 Listing .cel files
+
+cel_files <- list.celfiles("Data/GSE67472/", full.names = TRUE, listGzipped = TRUE)
+
+# 1.1.4 Reading in cel files
+
+raw_data <- read.celfiles(cel_files)
+
+# 1.2 Metadata
+
+gse <- getGEO("GSE67472", destdir = "C:/R/TH2_LOW/Metadata", getGPL = FALSE)
+
+# 1.2.2 Extract metadata (pData)
+
+metadata <- pData(phenoData(gse[[1]]))
+
+#> pData of raw_data initially only contains the ID for the counts and an index
+#> meanwhile metadata contains the full metadata but the IDs differ from the count data IDs
+
+# 3.- Preprocessing metadata --------------------------------------------------
+
+#3.1 Clean metadata
+
+metadata <- metadata %>%
+  mutate(
+    age = as.numeric(gsub("age: ", "", characteristics_ch1.1)),
+    gender = gsub("gender: ", "", characteristics_ch1.2),
+    disease = gsub("disease state: ", "", characteristics_ch1.3),
+    th2_group = ifelse(is.na(`th2 group:ch1`), "Control", `th2 group:ch1`),
+    `age:ch1` = NULL,
+    `disease state:ch1` = NULL,
+    `th2 group:ch1` = NULL,
+    `gender:ch1` = NULL,
+    characteristics_ch1.1 = NULL,
+    characteristics_ch1.2 = NULL,
+    characteristics_ch1.3 = NULL,
+    characteristics_ch1.4 = NULL
+  )
+
+# 3.2 Object with the names of each file
+
+file_name <- sampleNames(raw_data)
+
+# 3.2.2 Add the object to the phenotipic data
+
+pData(raw_data)$file_name <- file_name
+
+# 3.3 Create objects with names as found in the metadata
+
+sample_names <- gsub("_.*", "", file_name)
+
+# 3.3.2 Create columns in both metadata objects that contain the same ID and with the same name
+
+pData(raw_data)$commonids <- sample_names
+
+metadata$commonids <- sample_names
+
+# 3.4 Join metadata 
+
+pData(raw_data) <- 
+  pData(raw_data) %>% 
+  full_join(metadata, by = "commonids") 
+
+rownames(pData(raw_data)) <- pData(raw_data)$file_name
+
+
+
+
+# 4.- Preprocess data -----------------------------------------------------
+
+# 4.1 Boxplot of raw data
+
+boxplot(raw_data)
+
+# 4.2 Data normalization
+
+norm_data <- rma(raw_data)
+
+# 4.2.2 Boxplot of normalized data
+
+boxplot(norm_data)
+
+# 4.3 Expression matrix
+
+expr_matrix <- exprs(norm_data)
+
+
+# 5.- Probe ID to symbol --------------------------------------------------
+
+# 5.1 Get mapping to change probe IDs to gene names
+
+probe_gene <- AnnotationDbi::select(
+  hgu133plus2.db,
+  keys = rownames(expr_matrix),
+  columns = "SYMBOL",
+  keytype = "PROBEID"
+)
+
+# 5.2 Delete NA symbols and duplicate symbols and add to rownames
+
+# 5.2.1 Transform matrix to a tidy data frame and add Symbols
+
+gene_expres_matrix <- 
+  expr_matrix %>%
+  as.data.frame() %>%
+  rownames_to_column("PROBEID") %>%
+  inner_join(probe_gene, by = "PROBEID") %>%  # Join with your mapping object
+  filter(!is.na(SYMBOL) & SYMBOL != "") %>%   # Remove NAs and empty symbols
+  
+  # 5.2.2 Calculate variance for each probe across all samples
+  
+  mutate(variance = apply(dplyr::select(., -PROBEID, -SYMBOL), 1, var)) %>%
+  
+  # 5.2.3 Keep only the probe with the highest variance per Gene Symbol
+  
+  group_by(SYMBOL) %>%
+  slice_max(order_by = variance, n = 1, with_ties = FALSE) %>% 
+  ungroup() %>%
+  
+  # 5.2.4 Remove columns, add symbol to rownames and reformat to matrix
+  
+  dplyr::select(-PROBEID, -variance) %>%
+  column_to_rownames("SYMBOL") %>%
+  as.matrix()
+
+
+
+
+# 6.- Correct Batch effect ------------------------------------------------
+
+
+library(sva)
+
+# 6.1 Create objects for batch effect
+
+pheno_all <- pData(norm_data)
+expr_all <- gene_expres_matrix
+
+# 6.2 Model
+
+mod  <- model.matrix(~ as.factor(th2_group) + age + as.factor(gender), data = pheno_all)
+
+# 6.2.2 Null model
+
+mod0 <- model.matrix(~ 1, data = pheno_all)
+
+# 6.3 Find SVs across the whole dataset
+
+n.sv <- num.sv(expr_all, mod, method = "be")
+
+expr_all <- as.matrix(expr_all)
+
+# 6.3.2 Sv object
+
+svobj <- sva(expr_all, mod, mod0, n.sv = n.sv)
+
+# 6.4 Clean the matrix for visualization/clustering. We use the known 'study' variable and the new SVs
+
+expr_corrected <- removeBatchEffect(expr_all, 
+                                    design = mod,
+                                    covariates = svobj$sv)
+# 6.5 PCA CORRECTED
+
+library(factoextra)
+
+
+pca <- prcomp(t(expr_corrected))
+eigen <- get_eigenvalue(pca)
+
+pca_plot <- function(i, u) {
+  df <- data.frame(
+    PCi = pca$x[, i],
+    PCu = pca$x[, u],
+    th2 = pData(norm_data)$th2_group
+  )
+  
+  p <- ggplot(df, aes(PCi, PCu, color = th2)) +
+    geom_point(size = 3)  +
+    stat_ellipse(geom = "polygon", aes(fill = th2), alpha = 0.2, level = 0.9) +
+    labs(x = paste0("PC", i, " (", round(eigen[i, 2], 2), "%)"),
+         y = paste0("PC", u, " (", round(eigen[u, 2], 2), "%)"))
+  print(p)
+}
+
+pca_plot(1, 2)
+
+
+
+# 7.- Creating special objects --------------------------------------------
+
+# 7.0.1 Make sure that rownames of metadata and colnames of express matrix are in same order
+
+all(rownames(pData(norm_data)) == colnames(gene_expres_matrix))
+
+# 7.0.2 Object with asthma patients
+
+asthma_patients <- pData(norm_data)$th2_group != "Control"
+
+# 7.1 Data with only expression of asthma patients 
+
+# 7.1.2 Object with count of asthma patients not batch corrected
+
+expr_asthma <- gene_expres_matrix[, asthma_patients]
+
+# 7.1.2.2 Object with count of asthma patients batch corrected
+
+expr_asthma.batch <- expr_corrected[, asthma_patients]
+
+# 7.2 Metadata with only asthma patients
+
+metadata_asthma <- pData(norm_data)[asthma_patients, ]
+
+# // Dictionary // --------------------------------------------------------
+#> raw_data <- Data that corresponds to the extracted files, contains the expression matrix as well as 
+#>            few other data. Unnormalized
+#>            
+#> metadata <- Metadata with modifications for better lecture and correction of batch effect in this script
+#>            and in diff expression
+#>            
+#> pData(norm_data) <-  Metadata in oligo object
+#> 
+#> expr_matrix <- Normalized expression matrix with PROBE IDs corresponding to multiple symbols
+#> 
+#> gene_expres_matrix <- Normalozed expression matrix with unique SYMBOL IDs non batch proccessed
+#> 
+#> expr_corrected <- Expreession data corrected by batch with SVA
+#> 
+#> expr_asthma <- Object with count of only asthma patients not batch corrected
+#> 
+#> expr_astma.batch <- Object with count of asthma patients batch corrected
+#> 
+#> metadata_asthma <- Metadata with only asthma patients
