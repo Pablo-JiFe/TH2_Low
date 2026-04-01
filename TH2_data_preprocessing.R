@@ -1,9 +1,12 @@
-# Script to perform normalization
+# Script to perform normalization, annotation and batch correction for PCA and cluster analysis
+
 library(oligo)
 library(GEOquery)
 library(tidyverse)
 library(limma)
 library(hgu133plus2.db)
+library(gridExtra)
+
 
 
 # 1.- Load data and metadata ----------------------------------------------
@@ -42,6 +45,9 @@ metadata <- pData(phenoData(gse[[1]]))
 metadata <- metadata %>%
   mutate(
     age = as.numeric(gsub("age: ", "", characteristics_ch1.1)),
+    age.bin = ifelse(age <= median(age),
+                              yes = "Young",
+                              no = "Old"),
     gender = gsub("gender: ", "", characteristics_ch1.2),
     disease = gsub("disease state: ", "", characteristics_ch1.3),
     th2_group = ifelse(is.na(`th2 group:ch1`), "Control", `th2 group:ch1`),
@@ -202,6 +208,17 @@ pca_plot <- function(i, u) {
 
 pca_plot(1, 2)
 
+
+
+# 6.5.2 Top contributors to PC1 and PC2
+
+a <- fviz_contrib(pca, choice = "var", axes = 1, top = 30)
+
+
+b <- fviz_contrib(pca, choice = "var", axes = 2, top = 30)
+
+
+grid.arrange(a, b, ncol = 2)
 
 
 # 7.- Creating special objects --------------------------------------------
