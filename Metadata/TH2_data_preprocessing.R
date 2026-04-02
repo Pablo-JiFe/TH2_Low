@@ -25,7 +25,9 @@ cel_files <- list.celfiles("Data/GSE67472/", full.names = TRUE, listGzipped = TR
 
 # 1.1.4 Reading in cel files
 
-raw_data <- read.celfiles(cel_files)
+pre_raw_data <- read.celfiles(cel_files)
+
+raw_data <- pre_raw_data
 
 # 1.2 Metadata
 
@@ -38,6 +40,11 @@ metadata <- pData(phenoData(gse[[1]]))
 #> pData of raw_data initially only contains the ID for the counts and an index
 #> meanwhile metadata contains the full metadata but the IDs differ from the count data IDs
 
+
+# Object that specifies which GSE is in use
+
+gse_obj <- "GSE67472"
+
 # 3.- Preprocessing metadata --------------------------------------------------
 
 #3.1 Clean metadata
@@ -48,6 +55,7 @@ metadata <- metadata %>%
     age.bin = ifelse(age <= median(age),
                               yes = "Young",
                               no = "Old"),
+    age.bin = as.factor(age.bin),
     gender = gsub("gender: ", "", characteristics_ch1.2),
     disease = gsub("disease state: ", "", characteristics_ch1.3),
     th2_group = ifelse(is.na(`th2 group:ch1`), "Control", `th2 group:ch1`),
@@ -58,37 +66,48 @@ metadata <- metadata %>%
     characteristics_ch1.1 = NULL,
     characteristics_ch1.2 = NULL,
     characteristics_ch1.3 = NULL,
-    characteristics_ch1.4 = NULL
+    characteristics_ch1.4 = NULL,
+    study = case_when(
+      grepl("GBMC2", description) ~ "GBMC2",
+      grepl("MASTB", description) ~ "MASTB",
+      grepl("SAGE", description) ~ "SAGE",
+      TRUE ~ "Other"
+    ),
+    file_name = rownames(pData(raw_data))
   )
 
 # 3.2 Object with the names of each file
 
-file_name <- sampleNames(raw_data)
+id <- sampleNames(raw_data)
 
 # 3.2.2 Add the object to the phenotipic data
 
-pData(raw_data)$file_name <- file_name
+pData(raw_data)$id <- id
 
 # 3.3 Create objects with names as found in the metadata
 
-sample_names <- gsub("_.*", "", file_name)
+sample_names <- gsub("_.*", "", id)
 
 # 3.3.2 Create columns in both metadata objects that contain the same ID and with the same name
 
-pData(raw_data)$commonids <- sample_names
+pData(raw_data)$id <- sample_names
 
-metadata$commonids <- sample_names
+metadata$id <- sample_names
 
 # 3.4 Join metadata 
 
 pData(raw_data) <- 
   pData(raw_data) %>% 
-  full_join(metadata, by = "commonids") 
+  full_join(metadata, by = "id", keep = TRUE) %>% 
+    column_to_rownames("file_name") %>% 
+    mutate(
+      id.y = NULL
+    ) %>% 
+    rename(id = id.x)
 
-rownames(pData(raw_data)) <- pData(raw_data)$file_name
 
 
-
+metadata_all <- metadata
 
 # 4.- Preprocess data -----------------------------------------------------
 
@@ -107,7 +126,6 @@ boxplot(norm_data)
 # 4.3 Expression matrix
 
 expr_matrix <- exprs(norm_data)
-
 
 # 5.- Probe ID to symbol --------------------------------------------------
 
@@ -174,9 +192,18 @@ n.sv <- num.sv(expr_all, mod, method = "be")
 
 expr_all <- as.matrix(expr_all)
 
+
 # 6.3.2 Sv object
 
 svobj <- sva(expr_all, mod, mod0, n.sv = n.sv)
+
+
+########
+# 6.3.2.2
+# Object for later use with sv and patient IDs
+sv_df <- as.data.frame(svobj$sv)
+rownames(sv_df) <- colnames(gene_expres_matrix)
+########
 
 # 6.4 Clean the matrix for visualization/clustering. We use the known 'study' variable and the new SVs
 
@@ -249,16 +276,17 @@ metadata_asthma <- pData(norm_data)[asthma_patients, ]
 #> raw_data <- Data that corresponds to the extracted files, contains the expression matrix as well as 
 #>            few other data. Unnormalized
 #>            
-#> metadata <- Metadata with modifications for better lecture and correction of batch effect in this script
+#> metadata <- Object to save metadata if metadata_all has to be rerun
+#> metadata_all <- Metadata with modifications for better lecture and correction of batch effect in this script
 #>            and in diff expression
 #>            
 #> pData(norm_data) <-  Metadata in oligo object
 #> 
 #> expr_matrix <- Normalized expression matrix with PROBE IDs corresponding to multiple symbols
 #> 
-#> gene_expres_matrix <- Normalozed expression matrix with unique SYMBOL IDs non batch proccessed
+#> gene_expres_matrix <- Normalized expression matrix with unique SYMBOL IDs non batch proccessed
 #> 
-#> expr_corrected <- Expreession data corrected by batch with SVA
+#> expr_corrected <- Expression data corrected by batch with SVA
 #> 
 #> expr_asthma <- Object with count of only asthma patients not batch corrected
 #> 
