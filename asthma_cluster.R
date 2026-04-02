@@ -61,19 +61,25 @@ aggregate(data = icl_df, clusterConsensus ~ k, FUN = mean)
 # 2.4 Convert the results cluster object corresponding to selected k to a column in the metadata
 
 metadata_asthma <- 
-  as.data.frame(results[[3]]$consensusClass) %>% # Data frame corresponding to which cluster does each patient belong to
-  rename(cluster = "results[[3]]$consensusClass") %>% # Rename column to "cluster"
+  as.data.frame(results[[2]]$consensusClass) %>% # Data frame corresponding to which cluster does each patient belong to
+  rename(cluster = "results[[2]]$consensusClass") %>% # Rename column to "cluster"
   rownames_to_column("file_name") %>% # Asign rownames to a column for let join
-  left_join(x = metadata_asthma, by = "file_name") %>% # Join
-  column_to_rownames("file_name") # Rename rownames
+  left_join(metadata_asthma, by = "file_name") %>% # Join
+  column_to_rownames("file_name") %>% # Rename rownames
+  mutate(cluster = as.factor(cluster))
 
 
-# PCA of expression
+# 3.- Observe clusters via PCA --------------------------------------------
+
+# 3.1 PCA of expression
 
 pca_asthma <- prcomp(t(expr_asthma.batch))
 
+# 3.1.2 Eigenvalues of the PC
+
 eigen_as <- get_eigenvalue(pca_asthma)
 
+# 3.2 PCA plot function
 
 pca_plot_as <- function(i, u){
   
@@ -99,16 +105,12 @@ pca_plot_as <- function(i, u){
   print(p)
 }
 
+# 3.2.2 Which PCA to plot
+
 pca_plot_as(1, 2)
 
-for (i in 1:5) {
-  pca_plot_as(i, i + 1)
-}
 
-
-
-
-# 6.5.2 Top contributors to PC1 and PC2
+# 3.3 Top contributors to PC1 and PC2
 
 a <- fviz_contrib(pca_asthma, choice = "var", axes = 1, top = 30)
 
@@ -119,14 +121,24 @@ b <- fviz_contrib(pca_asthma, choice = "var", axes = 2, top = 30)
 grid.arrange(a, b, ncol = 2)
 
 
-# Observe the distribution of the original publications TH2 classification
+# 4.- Compare with initial publication ------------------------------------
+
+# 4.1 Observe the distribution of the original publications TH2 classification
 # within our clusters
 
 metadata_asthma %>% 
   filter(.preserve = c(th2_group, cluster)) %>% 
-  count(th2_group, cluster)
+  count(th2_group, cluster) %>% 
+  group_by(cluster) %>% 
+  mutate(prop = n / sum(n)) %>% 
+  dplyr::select(-n) %>% 
+  pivot_wider(names_from = th2_group, values_from = prop)
 
-
-prop.table(table(metadata_asthma$cluster, metadata_asthma$th2_group), 1)
 
 chisq.test(table(metadata_asthma$cluster, metadata_asthma$th2_group))
+
+
+# // Dictionary // --------------------------------------------------------
+
+#> metadata_asthma <- Metadata with only asthma patients and contains a column
+#> with the cluster that each patient forms part of
