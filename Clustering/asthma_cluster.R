@@ -92,14 +92,16 @@ pca_plot_as <- function(i, u, e, f){
   if(gse_obj == "GSE67472"){
     df2 <- 
       df2 %>% 
-      mutate(th2 = metadata_all$th2_group)
+      mutate(th2 = metadata_all$th2_group,
+             disease = metadata_all$disease)
   }else if(gse_obj == "GSE41861"){
     df2 <- 
       df2 %>% 
       mutate(disease = metadata_all$disease,
              tissue = metadata_all$Tissue,
              steroid = metadata_all$Steroids,
-             atopy = metadata_all$Atopy)
+             atopy = metadata_all$Atopy,
+             severity = metadata_all$`severity:ch1`)
   }
 
 
@@ -113,27 +115,29 @@ pca_plot_as <- function(i, u, e, f){
                  color = NA) +
     scale_fill_brewer(palette = "Set2") +
     labs(x = paste0("PC", i, " (", round(eigen_as[i, 2], 2), "%)"),
-         y = paste0("PC", u, " (", round(eigen_as[u, 2], 2), "%)")
+         y = paste0("PC", u, " (", round(eigen_as[u, 2], 2), "%)"),
+         title = paste0("PCA based on cluster of ", gse_obj)
     )
   print(p)
 }
 
 # 3.2.2 Which PCA to plot
 
-pca_plot_as(1, 2, "steroid", "tissue")
+pca_plot_as(1, 2, "th2", "age")
 
 
 
 
 # 3.3 Top contributors to PC1 and PC2
 
-a <- fviz_contrib(pca_asthma, choice = "var", axes = 1, top = 30)
+a <- fviz_contrib(pca_asthma, choice = "var", axes = 1, top = 30, fill = "#D34CA1", color = "#D34CA1") 
 
 
-b <- fviz_contrib(pca_asthma, choice = "var", axes = 2, top = 30)
+b <- fviz_contrib(pca_asthma, choice = "var", axes = 2, top = 30, fill = "#c131D9", color = "#c131D9") 
 
 
-grid.arrange(a, b, ncol = 2)
+grid.arrange(a, b, ncol = 2,
+             top = paste0("Top Gene Contributors to PC1 and PC2 from ", gse_obj))
 
 
 # 4.- Compare with initial publication ------------------------------------
@@ -159,7 +163,7 @@ table_dist.clusters <- function(i){
   print(chisq)
 }
 
-table_dist.clusters("Steroids")
+table_dist.clusters("th2_group")
 
 # // Dictionary // --------------------------------------------------------
 
