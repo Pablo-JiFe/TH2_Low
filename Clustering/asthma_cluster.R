@@ -7,7 +7,7 @@ library(ConsensusClusterPlus)
 
 # 1.1 Apply variance to the object of asthma only patients corrected by batch effect
 
-var_genes <- apply(expr_asthma.batch, 1, var)
+var_genes <- apply(expr_corrected, 1, var)
 
 # 1.2 Sort in decreasing manner based on variance and select top 5000 genes
 
@@ -15,7 +15,7 @@ top_genes <- names(sort(var_genes, decreasing = TRUE))[1:10000]
 
 # 1.3 Asign to object that will be the argument for the clustering
 
-cluster_counts <- expr_asthma.batch[top_genes, ]
+cluster_counts <- expr_corrected[top_genes, ]
 
 # 1.3.2 Convert to matrix
 
@@ -58,13 +58,12 @@ icl_df <- as.data.frame(icl$clusterConsensus)
 aggregate(data = icl_df, clusterConsensus ~ k, FUN = mean)
 
 
-# 2.4 Convert the results cluster object corresponding to selected k to a column in the metadata
+# 2.4 Convert the results cluster object corresponding to selected k to a column in the metadata_all
 
-metadata_asthma <- 
-  as.data.frame(results[[2]]$consensusClass) %>% # Data frame corresponding to which cluster does each patient belong to
-  rename(cluster = "results[[2]]$consensusClass") %>% # Rename column to "cluster"
+metadata_all <- as.data.frame(results[[3]]$consensusClass) %>% # Data frame corresponding to which cluster does each patient belong to
+  rename(cluster = "results[[3]]$consensusClass") %>% # Rename column to "cluster"
   rownames_to_column("file_name") %>% # Asign rownames to a column for let join
-  left_join(metadata_asthma, by = "file_name") %>% # Join
+  left_join(metadata_all, by = "file_name") %>% # Join
   column_to_rownames("file_name") %>% # Rename rownames
   mutate(cluster = as.factor(cluster))
 
@@ -73,7 +72,7 @@ metadata_asthma <-
 
 # 3.1 PCA of expression
 
-pca_asthma <- prcomp(t(expr_asthma.batch))
+pca_asthma <- prcomp(t(expr_corrected))
 
 # 3.1.2 Eigenvalues of the PC
 
@@ -81,17 +80,31 @@ eigen_as <- get_eigenvalue(pca_asthma)
 
 # 3.2 PCA plot function
 
-pca_plot_as <- function(i, u){
+pca_plot_as <- function(i, u, e, f){
   
   df2 <- data.frame(
     PCi = pca_asthma$x[,i],
     PCu = pca_asthma$x[,u],
-    th2 = metadata_asthma$th2_group,
-    cluster = factor(metadata_asthma$cluster),
-    age = metadata_asthma$age.bin
-  )
+    cluster = factor(metadata_all$cluster),
+  age = as.factor(metadata_all$age.bin))
   
-  p <- ggplot(df2, aes(PCi, PCu, color = th2, shape = age)) +
+  
+  if(gse_obj == "GSE67472"){
+    df2 <- 
+      df2 %>% 
+      mutate(th2 = metadata_all$th2_group)
+  }else if(gse_obj == "GSE41861"){
+    df2 <- 
+      df2 %>% 
+      mutate(disease = metadata_all$disease,
+             tissue = metadata_all$Tissue,
+             steroid = metadata_all$Steroids,
+             atopy = metadata_all$Atopy)
+  }
+
+
+  
+  p <- ggplot(df2, aes(PCi, PCu, color = .data[[e]], shape = .data[[f]], group = .data[[f]])) +
     geom_point(size = 3)  +
     stat_ellipse(geom = "polygon", 
                  aes(fill = cluster, group = cluster), 
@@ -107,7 +120,9 @@ pca_plot_as <- function(i, u){
 
 # 3.2.2 Which PCA to plot
 
-pca_plot_as(1, 2)
+pca_plot_as(1, 2, "steroid", "tissue")
+
+
 
 
 # 3.3 Top contributors to PC1 and PC2
@@ -126,19 +141,27 @@ grid.arrange(a, b, ncol = 2)
 # 4.1 Observe the distribution of the original publications TH2 classification
 # within our clusters
 
-metadata_asthma %>% 
-  filter(.preserve = c(th2_group, cluster)) %>% 
-  count(th2_group, cluster) %>% 
-  group_by(cluster) %>% 
-  mutate(prop = n / sum(n)) %>% 
-  dplyr::select(-n) %>% 
-  pivot_wider(names_from = th2_group, values_from = prop)
+table_dist.clusters <- function(i){
+  
+  i <- sym(i)
+  
+  tab <- metadata_all %>% 
+    count(!!i, cluster) %>% 
+    group_by(cluster) %>% 
+    mutate(prop = n / sum(n)) %>% 
+    dplyr::select(-n) %>% 
+    pivot_wider(names_from = !!i, values_from = prop)
+  
+  print(tab)
+  
+  # Chi-square test
+  chisq <- chisq.test(table(metadata_all$cluster, metadata_all[[rlang::as_string(i)]]))
+  print(chisq)
+}
 
-
-chisq.test(table(metadata_asthma$cluster, metadata_asthma$th2_group))
-
+table_dist.clusters("Steroids")
 
 # // Dictionary // --------------------------------------------------------
 
-#> metadata_asthma <- Metadata with only asthma patients and contains a column
+#> metadata_all <- metadata_all with only asthma patients and contains a column
 #> with the cluster that each patient forms part of
